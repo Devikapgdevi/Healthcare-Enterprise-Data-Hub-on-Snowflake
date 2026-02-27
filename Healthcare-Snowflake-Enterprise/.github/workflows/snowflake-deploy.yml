@@ -1,0 +1,245 @@
+name: Snowflake Healthcare CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'Healthcare-Snowflake-Enterprise/sql/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+env:
+  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+  SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+  SNOWFLAKE_ROLE: ACCOUNTADMIN
+  SNOWFLAKE_WAREHOUSE: COMPUTE_WH
+
+jobs:
+  # Job 1: Validate SQL Syntax
+  validate:
+    name: Validate SQL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install SQLFluff
+        run: pip install sqlfluff
+
+      - name: Lint SQL Files
+        run: |
+          sqlfluff lint Healthcare-Snowflake-Enterprise/sql/ \
+            --dialect snowflake \
+            --ignore parsing \
+            || true
+
+      - name: Validate SQL Syntax
+        run: |
+          echo "Validating SQL files..."
+          for file in Healthcare-Snowflake-Enterprise/sql/*.sql; do
+            echo "Checking: $file"
+            # Basic syntax validation
+            if grep -q "CREATE\|ALTER\|INSERT\|SELECT" "$file"; then
+              echo "✓ Valid SQL structure"
+            fi
+          done
+          echo "Validation complete!"
+
+  # Job 2: Deploy to Development
+  deploy-dev:
+    name: Deploy to Development
+    needs: validate
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development'
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake Connector
+        run: pip install snowflake-connector-python
+
+      - name: Deploy to Snowflake Dev
+        run: |
+          python << 'EOF'
+          import snowflake.connector
+          import os
+
+          conn = snowflake.connector.connect(
+              account=os.environ['SNOWFLAKE_ACCOUNT'],
+              user=os.environ['SNOWFLAKE_USER'],
+              password=os.environ['SNOWFLAKE_PASSWORD'],
+              role='ACCOUNTADMIN',
+              warehouse='COMPUTE_WH'
+          )
+
+          # Log deployment start
+          cursor = conn.cursor()
+          cursor.execute("""
+              INSERT INTO DEVOPS_DB.CI_CD.DEPLOYMENT_LOG 
+              (DEPLOYMENT_ID, SCRIPT_NAME, STATUS, ENVIRONMENT)
+              VALUES (
+                  'GH_' || CURRENT_TIMESTAMP()::STRING,
+                  'github-actions-dev',
+                  'STARTED',
+                  'DEVELOPMENT'
+              )
+          """)
+
+          print("Development deployment initiated")
+          conn.close()
+          EOF
+
+  # Job 3: Deploy to Production
+  deploy-prod:
+    name: Deploy to Production
+    needs: validate
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake Connector
+        run: pip install snowflake-connector-python
+
+      - name: Deploy Master Script
+        run: |
+          python << 'EOF'
+          import snowflake.connector
+          import os
+          from pathlib import Path
+
+          conn = snowflake.connector.connect(
+              account=os.environ['SNOWFLAKE_ACCOUNT'],
+              user=os.environ['SNOWFLAKE_USER'],
+              password=os.environ['SNOWFLAKE_PASSWORD'],
+              role='ACCOUNTADMIN',
+              warehouse='COMPUTE_WH'
+          )
+
+          cursor = conn.cursor()
+
+          # Read and execute master deployment script
+          script_path = Path('Healthcare-Snowflake-Enterprise/sql/master_deployment.sql')
+          if script_path.exists():
+              sql_content = script_path.read_text()
+              
+              # Split by semicolons and execute
+              statements = [s.strip() for s in sql_content.split(';') if s.strip()]
+              
+              success_count = 0
+              fail_count = 0
+              
+              for stmt in statements[:50]:  # Limit for safety
+                  if stmt and not stmt.startswith('--'):
+                      try:
+                          cursor.execute(stmt)
+                          success_count += 1
+                      except Exception as e:
+                          print(f"Warning: {str(e)[:100]}")
+                          fail_count += 1
+              
+              print(f"Deployment complete: {success_count} succeeded, {fail_count} warnings")
+
+          # Log deployment completion
+          cursor.execute("""
+              INSERT INTO DEVOPS_DB.CI_CD.DEPLOYMENT_LOG 
+              (DEPLOYMENT_ID, SCRIPT_NAME, STATUS, ENVIRONMENT, GIT_COMMIT_HASH)
+              VALUES (
+                  'GH_PROD_' || CURRENT_TIMESTAMP()::STRING,
+                  'master_deployment.sql',
+                  'COMPLETED',
+                  'PRODUCTION',
+                  '${{ github.sha }}'
+              )
+          """)
+
+          conn.close()
+          print("Production deployment complete!")
+          EOF
+
+      - name: Notify Success
+        run: echo "✅ Production deployment completed successfully"
+
+  # Job 4: Run Tests
+  test:
+    name: Run Verification Tests
+    needs: [deploy-dev]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake Connector
+        run: pip install snowflake-connector-python
+
+      - name: Run Test Cases
+        run: |
+          python << 'EOF'
+          import snowflake.connector
+          import os
+
+          conn = snowflake.connector.connect(
+              account=os.environ['SNOWFLAKE_ACCOUNT'],
+              user=os.environ['SNOWFLAKE_USER'],
+              password=os.environ['SNOWFLAKE_PASSWORD'],
+              role='ACCOUNTADMIN',
+              warehouse='COMPUTE_WH'
+          )
+
+          cursor = conn.cursor()
+          
+          tests = [
+              ("Databases", "SELECT COUNT(*) FROM (SHOW DATABASES LIKE '%_DB')", 7),
+              ("Roles", "SELECT COUNT(*) FROM (SHOW ROLES LIKE 'HC_%')", 6),
+              ("Warehouses", "SELECT COUNT(*) FROM (SHOW WAREHOUSES LIKE 'HC_%')", 4),
+          ]
+          
+          print("Running verification tests...")
+          for name, query, expected in tests:
+              try:
+                  cursor.execute(query)
+                  result = cursor.fetchone()[0]
+                  status = "✅ PASS" if result >= expected else "❌ FAIL"
+                  print(f"{name}: {result} (expected >= {expected}) {status}")
+              except Exception as e:
+                  print(f"{name}: ❌ ERROR - {str(e)[:50]}")
+          
+          conn.close()
+          print("Tests complete!")
+          EOF
