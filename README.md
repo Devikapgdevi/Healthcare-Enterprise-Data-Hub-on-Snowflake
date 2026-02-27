@@ -1,1 +1,2 @@
-# Healthcare-Enterprise-Data-Hub-on-Snowflake
+# snowflake-enterprise-healthcare-architecture
+Enterprise-grade Snowflake Healthcare Data Platform with RBAC, Medallion Architecture, Governance, Monitoring & CI/CD
