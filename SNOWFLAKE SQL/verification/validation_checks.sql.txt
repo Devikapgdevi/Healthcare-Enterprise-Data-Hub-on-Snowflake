@@ -1,0 +1,55 @@
+-- =====================================================
+-- PHASE 10 – VERIFICATION (USER-SAFE VERSION)
+-- Runs using current login/roles only
+-- =====================================================
+
+-- 1️⃣ Test Case 1: Attempt to create warehouse
+-- Expected: FAIL if your current role cannot create warehouses
+CREATE WAREHOUSE TEST_WAREHOUSE_SAFE
+    WAREHOUSE_SIZE = 'SMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE;
+
+-- 2️⃣ Test Case 2: Attempt to alter RAW table
+-- Expected: FAIL if your current role cannot modify tables
+ALTER TABLE RAW_DB.RAW_SCHEMA.PATIENT_RAW ADD COLUMN TEST_COL_SAFE STRING;
+
+-- 3️⃣ Test Case 3: Attempt to SELECT data
+-- Expected: Should succeed if your role has SELECT privileges
+SELECT * FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW
+LIMIT 10;
+
+-- 4️⃣ Test Case 4: Masking policy test
+-- Expected: You see masked values if you are not SECURITY_ADMIN
+SELECT SSN, INSURANCE_NO, PHONE
+FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW
+LIMIT 10;
+
+-- 5️⃣ Test Case 5: Row access policy test
+-- Expected: Only rows allowed by your current role / region policy
+SELECT * 
+FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW
+WHERE HOSPITAL_REGION = 'North'
+LIMIT 10;
+
+-- 6️⃣ Test Case 6: Audit views verification
+-- Expected: Shows entries if your role has access
+SELECT * FROM AUDIT_DB.AUDIT_SCHEMA.LOGIN_HISTORY_AUDIT
+LIMIT 10;
+
+SELECT * FROM AUDIT_DB.AUDIT_SCHEMA.ROLE_CHANGES_AUDIT
+LIMIT 10;
+
+SELECT * FROM AUDIT_DB.AUDIT_SCHEMA.USER_CREATION_AUDIT
+LIMIT 10;
+
+SELECT * FROM AUDIT_DB.AUDIT_SCHEMA.GRANT_HISTORY_AUDIT
+LIMIT 10;
+
+-- 7️⃣ Test Case 7: Data Governance Tag test
+-- Expected: Lists all tags in SECURITY_SCHEMA
+SHOW TAGS IN SCHEMA SECURITY_DB.SECURITY_SCHEMA;
+
+-- =====================================================
+-- ✅ Phase 10 Verification Complete (Safe)
+-- =====================================================

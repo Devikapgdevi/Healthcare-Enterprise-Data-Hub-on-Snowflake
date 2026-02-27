@@ -1,0 +1,111 @@
+-- =====================================================
+-- PHASE 11 – MEDALLION ARCHITECTURE
+-- =====================================================
+
+-- 1️⃣ Use SYSADMIN for DB & table operations
+USE ROLE SYSADMIN;
+
+-- =====================================================
+-- 2️⃣ Bronze Layer (RAW_DB)
+-- Already created as PATIENT_RAW, ICU_EVENTS, BILLING_DATA, DEVICE_ALERTS
+-- RAW_DB → Bronze
+USE DATABASE RAW_DB;
+USE SCHEMA RAW_SCHEMA;
+
+-- Confirm raw tables
+SHOW TABLES;
+
+-- =====================================================
+-- 3️⃣ Silver Layer (TRANSFORM_DB)
+-- Cleaned / transformed patient data
+CREATE OR REPLACE DATABASE TRANSFORM_DB;
+CREATE OR REPLACE SCHEMA TRANSFORM_DB.TRANSFORM_SCHEMA;
+
+USE DATABASE TRANSFORM_DB;
+USE SCHEMA TRANSFORM_DB.TRANSFORM_SCHEMA;
+
+-- Cleaned Patient Table
+CREATE OR REPLACE TABLE CLEAN_PATIENT AS
+SELECT
+    PATIENT_ID,
+    NAME,
+    AGE,
+    GENDER,
+    ADMISSION_DATE,
+    DIAGNOSIS,
+    -- Mask sensitive info for Silver layer
+    LEFT(PATIENT_ID, 3) || 'XXX' AS PATIENT_ID_MASKED
+FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW;
+
+-- Transform ICU events
+CREATE OR REPLACE TABLE CLEAN_ICU_EVENTS AS
+SELECT
+    EVENT_ID,
+    PATIENT_ID,
+    EVENT_TYPE,
+    EVENT_TIMESTAMP,
+    HEART_RATE,
+    OXYGEN_LEVEL
+FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS;
+
+-- =====================================================
+-- 4️⃣ Gold Layer (ANALYTICS_DB)
+-- Aggregated and analytics-ready data
+CREATE OR REPLACE DATABASE ANALYTICS_DB;
+CREATE OR REPLACE SCHEMA ANALYTICS_DB.ANALYTICS_SCHEMA;
+
+USE DATABASE ANALYTICS_DB;
+USE SCHEMA ANALYTICS_DB.ANALYTICS_SCHEMA;
+
+-- Patient Analytics Table
+CREATE OR REPLACE TABLE PATIENT_ANALYTICS AS
+SELECT
+    c.PATIENT_ID,
+    c.NAME,
+    c.AGE,
+    c.GENDER,
+    c.ADMISSION_DATE,
+    c.DIAGNOSIS,
+    COUNT(i.EVENT_ID) AS ICU_EVENT_COUNT,
+    AVG(i.HEART_RATE) AS AVG_HEART_RATE,
+    AVG(i.OXYGEN_LEVEL) AS AVG_OXYGEN_LEVEL
+FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_PATIENT c
+LEFT JOIN TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_ICU_EVENTS i
+    ON c.PATIENT_ID = i.PATIENT_ID
+GROUP BY c.PATIENT_ID, c.NAME, c.AGE, c.GENDER, c.ADMISSION_DATE, c.DIAGNOSIS;
+
+-- =====================================================
+-- 5️⃣ Platinum Layer (AI_READY_DB)
+-- Feature store for ML/AI models
+CREATE OR REPLACE DATABASE AI_READY_DB;
+CREATE OR REPLACE SCHEMA AI_READY_DB.AI_SCHEMA;
+
+USE DATABASE AI_READY_DB;
+USE SCHEMA AI_READY_DB.AI_SCHEMA;
+
+-- ICU Feature Store
+CREATE OR REPLACE TABLE ICU_FEATURE_STORE AS
+SELECT
+    p.PATIENT_ID,
+    p.AGE,
+    p.GENDER,
+    p.DIAGNOSIS,
+    p.ICU_EVENT_COUNT,
+    p.AVG_HEART_RATE,
+    p.AVG_OXYGEN_LEVEL,
+    -- Additional AI features
+    CASE WHEN p.AVG_OXYGEN_LEVEL < 90 THEN 1 ELSE 0 END AS RISK_LOW_OXYGEN,
+    CASE WHEN p.AGE > 60 THEN 1 ELSE 0 END AS RISK_AGE
+FROM ANALYTICS_DB.ANALYTICS_SCHEMA.PATIENT_ANALYTICS p;
+
+-- =====================================================
+-- 6️⃣ Verify Medallion Flow
+-- Bronze → Silver → Gold → Platinum
+SELECT * FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW LIMIT 5;
+SELECT * FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_PATIENT LIMIT 5;
+SELECT * FROM ANALYTICS_DB.ANALYTICS_SCHEMA.PATIENT_ANALYTICS LIMIT 5;
+SELECT * FROM AI_READY_DB.AI_SCHEMA.ICU_FEATURE_STORE LIMIT 5;
+
+-- =====================================================
+-- ✅ PHASE 11 – MEDALLION ARCHITECTURE COMPLETE
+-- =====================================================
