@@ -1,257 +1,377 @@
-# Healthcare Enterprise Dashboard
-# Streamlit Application for Snowflake Healthcare Data Hub
-
 import streamlit as st
+from snowflake.snowpark.context import get_active_session
 
-# Page Configuration
 st.set_page_config(
     page_title="Healthcare Enterprise Data Hub",
     page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Connection (uses native Snowflake connection in Snowsight)
-# When running in Snowsight, connection is automatic
-# For local development, use snowflake.connector
+# Get Snowflake session
+session = get_active_session()
 
-def get_connection():
-    """Get Snowflake connection - works in Snowsight natively"""
-    try:
-        # In Snowsight, use session
-        from snowflake.snowpark.context import get_active_session
-        return get_active_session()
-    except:
-        # For local dev
-        import snowflake.connector
-        return snowflake.connector.connect(
-            account='tyb42779',
-            user='DEVIKAPG',
-            authenticator='externalbrowser',
-            role='ACCOUNTADMIN',
-            warehouse='COMPUTE_WH'
-        )
+# Header
+st.title("🏥 Healthcare Enterprise Data Hub")
+st.markdown("**Enterprise-grade Snowflake Healthcare Data Platform**")
+st.markdown("---")
 
 # Sidebar Navigation
-st.sidebar.title("🏥 Healthcare Hub")
-page = st.sidebar.radio(
-    "Navigate",
-    ["📊 Dashboard", "👥 Patients", "🏃 ICU Monitor", "💰 Billing", "⚠️ Risk Analysis", "📈 Performance"]
-)
+st.sidebar.header("Navigation")
+page = st.sidebar.radio("Select Page", [
+    "📊 Overview",
+    "👥 Patient Analytics",
+    "🏨 ICU Monitoring",
+    "💰 Billing Analytics",
+    "📈 Monitoring",
+    "🔐 Governance"
+])
 
-# Main Dashboard
-if page == "📊 Dashboard":
-    st.title("Healthcare Enterprise Data Hub")
-    st.markdown("### Real-time Analytics Dashboard")
+# ======================
+# PAGE: OVERVIEW
+# ======================
+if page == "📊 Overview":
+    st.header("Dashboard Overview")
     
-    # KPI Metrics
+    # Key Metrics
     col1, col2, col3, col4 = st.columns(4)
     
-    with col1:
-        st.metric("Total Patients", "10,000", "+150 today")
-    with col2:
-        st.metric("ICU Events", "50,000", "+2,340 today")
-    with col3:
-        st.metric("Critical Patients", "1,247", "-23 from yesterday")
-    with col4:
-        st.metric("Revenue", "$12.5M", "+$500K")
+    # Patient Count
+    patient_count = session.sql("SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW").collect()[0][0]
+    col1.metric("👥 Total Patients", f"{patient_count:,}")
+    
+    # ICU Events
+    icu_count = session.sql("SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS").collect()[0][0]
+    col2.metric("🏨 ICU Events", f"{icu_count:,}")
+    
+    # Critical Events
+    critical_count = session.sql("SELECT COUNT(*) FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_ICU_EVENTS WHERE IS_CRITICAL = TRUE").collect()[0][0]
+    col3.metric("⚠️ Critical Events", f"{critical_count:,}")
+    
+    # Total Billing
+    billing_total = session.sql("SELECT SUM(TOTAL_AMOUNT) FROM ANALYTICS_DB.ANALYTICS_SCHEMA.BILLING_ANALYTICS").collect()[0][0]
+    col4.metric("💰 Total Billing", f"${billing_total:,.0f}")
     
     st.markdown("---")
     
-    # Charts
-    col1, col2 = st.columns(2)
+    # Architecture Diagram
+    st.subheader("🏗️ Medallion Architecture")
     
-    with col1:
-        st.subheader("📊 Patient Distribution by Diagnosis")
-        st.bar_chart({
-            "Cardiology": 2500,
-            "Neurology": 2100,
-            "Pulmonology": 1800,
-            "Orthopedics": 1600,
-            "General": 2000
-        })
+    arch_col1, arch_col2, arch_col3, arch_col4 = st.columns(4)
     
-    with col2:
-        st.subheader("📈 ICU Events Trend")
-        import pandas as pd
-        dates = pd.date_range(start='2026-02-01', periods=27, freq='D')
-        events = [1500 + i*50 for i in range(27)]
-        st.line_chart(pd.DataFrame({"Events": events}, index=dates))
+    with arch_col1:
+        st.markdown("### 🥉 Bronze")
+        st.markdown("**RAW_DB**")
+        bronze_count = session.sql("""
+            SELECT SUM(cnt) FROM (
+                SELECT COUNT(*) as cnt FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW
+                UNION ALL SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS
+                UNION ALL SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.BILLING_DATA
+            )
+        """).collect()[0][0]
+        st.metric("Records", f"{bronze_count:,}")
+    
+    with arch_col2:
+        st.markdown("### 🥈 Silver")
+        st.markdown("**TRANSFORM_DB**")
+        silver_count = session.sql("""
+            SELECT SUM(cnt) FROM (
+                SELECT COUNT(*) as cnt FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_PATIENT
+                UNION ALL SELECT COUNT(*) FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_ICU_EVENTS
+            )
+        """).collect()[0][0]
+        st.metric("Records", f"{silver_count:,}")
+    
+    with arch_col3:
+        st.markdown("### 🥇 Gold")
+        st.markdown("**ANALYTICS_DB**")
+        gold_count = session.sql("""
+            SELECT SUM(cnt) FROM (
+                SELECT COUNT(*) as cnt FROM ANALYTICS_DB.ANALYTICS_SCHEMA.PATIENT_ANALYTICS
+                UNION ALL SELECT COUNT(*) FROM ANALYTICS_DB.ANALYTICS_SCHEMA.BILLING_ANALYTICS
+            )
+        """).collect()[0][0]
+        st.metric("Records", f"{gold_count:,}")
+    
+    with arch_col4:
+        st.markdown("### 💎 Platinum")
+        st.markdown("**AI_READY_DB**")
+        st.metric("Feature Store", "Active")
+    
+    st.markdown("---")
+    
+    # Diagnosis Distribution
+    st.subheader("📊 Patient Distribution by Diagnosis")
+    diagnosis_df = session.sql("""
+        SELECT DIAGNOSIS, COUNT(*) as PATIENT_COUNT 
+        FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW 
+        GROUP BY DIAGNOSIS 
+        ORDER BY PATIENT_COUNT DESC
+    """).to_pandas()
+    st.bar_chart(diagnosis_df.set_index('DIAGNOSIS'))
 
-# Patients Page
-elif page == "👥 Patients":
-    st.title("Patient Management")
+# ======================
+# PAGE: PATIENT ANALYTICS
+# ======================
+elif page == "👥 Patient Analytics":
+    st.header("Patient Analytics")
     
     # Filters
+    col1, col2 = st.columns(2)
+    with col1:
+        diagnosis_filter = st.selectbox("Filter by Diagnosis", ["All", "Cardiology", "Neurology", "Orthopedics", "General"])
+    with col2:
+        gender_filter = st.selectbox("Filter by Gender", ["All", "M", "F"])
+    
+    # Build query
+    query = "SELECT * FROM ANALYTICS_DB.ANALYTICS_SCHEMA.PATIENT_ANALYTICS WHERE 1=1"
+    if diagnosis_filter != "All":
+        query += f" AND DIAGNOSIS = '{diagnosis_filter}'"
+    if gender_filter != "All":
+        query += f" AND GENDER = '{gender_filter}'"
+    query += " LIMIT 100"
+    
+    patient_df = session.sql(query).to_pandas()
+    
+    # Metrics
     col1, col2, col3 = st.columns(3)
-    with col1:
-        diagnosis = st.selectbox("Diagnosis", ["All", "Cardiology", "Neurology", "Pulmonology", "Orthopedics", "General"])
-    with col2:
-        region = st.selectbox("Region", ["All", "North", "South", "East", "West"])
-    with col3:
-        risk = st.selectbox("Risk Level", ["All", "Critical", "High", "Medium", "Low"])
+    col1.metric("Patients Shown", len(patient_df))
+    col2.metric("Avg ICU Events", f"{patient_df['ICU_EVENT_COUNT'].mean():.1f}" if len(patient_df) > 0 else "N/A")
+    col3.metric("Avg Critical Events", f"{patient_df['CRITICAL_EVENT_COUNT'].mean():.1f}" if len(patient_df) > 0 else "N/A")
     
     st.markdown("---")
     
-    # Sample Patient Data
-    st.subheader("Patient List (Sample)")
-    patient_data = {
-        "Patient ID": ["P00001", "P00002", "P00003", "P00004", "P00005"],
-        "Name": ["Patient_00001", "Patient_00002", "Patient_00003", "Patient_00004", "Patient_00005"],
-        "Age": [45, 67, 32, 78, 54],
-        "Gender": ["M", "F", "M", "F", "M"],
-        "Diagnosis": ["Cardiology", "Neurology", "General", "Pulmonology", "Orthopedics"],
-        "Risk Score": [2, 4, 1, 3, 2],
-        "Status": ["Stable", "Critical", "Stable", "High", "Stable"]
-    }
-    st.dataframe(patient_data, use_container_width=True)
-
-# ICU Monitor
-elif page == "🏃 ICU Monitor":
-    st.title("ICU Real-time Monitor")
+    # Data Table
+    st.subheader("Patient Data")
+    st.dataframe(patient_df, use_container_width=True)
     
+    # Age Distribution
+    st.subheader("Age Distribution")
+    age_df = session.sql("""
+        SELECT 
+            CASE 
+                WHEN AGE < 30 THEN '18-29'
+                WHEN AGE < 50 THEN '30-49'
+                WHEN AGE < 70 THEN '50-69'
+                ELSE '70+'
+            END as AGE_GROUP,
+            COUNT(*) as COUNT
+        FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW
+        GROUP BY AGE_GROUP
+        ORDER BY AGE_GROUP
+    """).to_pandas()
+    st.bar_chart(age_df.set_index('AGE_GROUP'))
+
+# ======================
+# PAGE: ICU MONITORING
+# ======================
+elif page == "🏨 ICU Monitoring":
+    st.header("ICU Monitoring Dashboard")
+    
+    # Real-time Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    critical_today = session.sql("""
+        SELECT COUNT(*) FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_ICU_EVENTS 
+        WHERE IS_CRITICAL = TRUE AND EVENT_TIMESTAMP >= CURRENT_DATE()
+    """).collect()[0][0]
+    col1.metric("🚨 Critical Today", critical_today)
+    
+    avg_hr = session.sql("SELECT ROUND(AVG(HEART_RATE), 1) FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS").collect()[0][0]
+    col2.metric("❤️ Avg Heart Rate", avg_hr)
+    
+    avg_o2 = session.sql("SELECT ROUND(AVG(OXYGEN_LEVEL), 1) FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS").collect()[0][0]
+    col3.metric("🫁 Avg Oxygen Level", f"{avg_o2}%")
+    
+    total_events = session.sql("SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS").collect()[0][0]
+    col4.metric("📊 Total Events", f"{total_events:,}")
+    
+    st.markdown("---")
+    
+    # Critical Events by Type
+    st.subheader("⚠️ Critical Events by Type")
+    critical_df = session.sql("""
+        SELECT EVENT_TYPE, COUNT(*) as CRITICAL_COUNT
+        FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_ICU_EVENTS
+        WHERE IS_CRITICAL = TRUE
+        GROUP BY EVENT_TYPE
+        ORDER BY CRITICAL_COUNT DESC
+    """).to_pandas()
+    st.bar_chart(critical_df.set_index('EVENT_TYPE'))
+    
+    # Recent Critical Events
+    st.subheader("🚨 Recent Critical Events")
+    recent_critical = session.sql("""
+        SELECT EVENT_ID, PATIENT_ID, EVENT_TYPE, HEART_RATE, OXYGEN_LEVEL, EVENT_TIMESTAMP
+        FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_ICU_EVENTS
+        WHERE IS_CRITICAL = TRUE
+        ORDER BY EVENT_TIMESTAMP DESC
+        LIMIT 20
+    """).to_pandas()
+    st.dataframe(recent_critical, use_container_width=True)
+    
+    # Vitals Distribution
+    st.subheader("📈 Vitals Distribution")
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("❤️ Heart Rate Distribution")
-        hr_data = {"60-80": 30, "80-100": 45, "100-120": 20, ">120": 5}
-        st.bar_chart(hr_data)
+        st.markdown("**Heart Rate Distribution**")
+        hr_df = session.sql("""
+            SELECT 
+                CASE 
+                    WHEN HEART_RATE < 60 THEN 'Low (<60)'
+                    WHEN HEART_RATE <= 100 THEN 'Normal (60-100)'
+                    ELSE 'High (>100)'
+                END as HR_CATEGORY,
+                COUNT(*) as COUNT
+            FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS
+            GROUP BY HR_CATEGORY
+        """).to_pandas()
+        st.bar_chart(hr_df.set_index('HR_CATEGORY'))
     
     with col2:
-        st.subheader("🫁 Oxygen Level Distribution")
-        o2_data = {"95-100%": 60, "92-95%": 25, "88-92%": 10, "<88%": 5}
-        st.bar_chart(o2_data)
+        st.markdown("**Oxygen Level Distribution**")
+        o2_df = session.sql("""
+            SELECT 
+                CASE 
+                    WHEN OXYGEN_LEVEL < 90 THEN 'Critical (<90%)'
+                    WHEN OXYGEN_LEVEL < 95 THEN 'Low (90-94%)'
+                    ELSE 'Normal (95%+)'
+                END as O2_CATEGORY,
+                COUNT(*) as COUNT
+            FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS
+            GROUP BY O2_CATEGORY
+        """).to_pandas()
+        st.bar_chart(o2_df.set_index('O2_CATEGORY'))
+
+# ======================
+# PAGE: BILLING ANALYTICS
+# ======================
+elif page == "💰 Billing Analytics":
+    st.header("Billing Analytics")
+    
+    # Summary Metrics
+    billing_summary = session.sql("""
+        SELECT 
+            SUM(TOTAL_AMOUNT) as TOTAL,
+            SUM(PAID_AMOUNT) as PAID,
+            SUM(PENDING_AMOUNT) as PENDING,
+            SUM(OVERDUE_AMOUNT) as OVERDUE
+        FROM ANALYTICS_DB.ANALYTICS_SCHEMA.BILLING_ANALYTICS
+    """).to_pandas()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💵 Total Billed", f"${billing_summary['TOTAL'][0]:,.0f}")
+    col2.metric("✅ Paid", f"${billing_summary['PAID'][0]:,.0f}")
+    col3.metric("⏳ Pending", f"${billing_summary['PENDING'][0]:,.0f}")
+    col4.metric("❌ Overdue", f"${billing_summary['OVERDUE'][0]:,.0f}")
     
     st.markdown("---")
     
-    st.subheader("⚠️ Recent Critical Alerts")
-    alerts = {
-        "Time": ["14:32:15", "14:28:43", "14:25:01", "14:20:55"],
-        "Patient": ["P03421", "P07832", "P01234", "P09876"],
-        "Alert Type": ["Low Oxygen", "High Heart Rate", "High BP", "Low Oxygen"],
-        "Value": ["87%", "135 bpm", "180/110", "85%"],
-        "Status": ["Active", "Active", "Resolved", "Active"]
-    }
-    st.dataframe(alerts, use_container_width=True)
-
-# Billing Page
-elif page == "💰 Billing":
-    st.title("Billing Analytics")
+    # Billing Status Distribution
+    st.subheader("📊 Billing Status Distribution")
+    status_df = session.sql("""
+        SELECT STATUS, COUNT(*) as COUNT, SUM(AMOUNT) as TOTAL_AMOUNT
+        FROM RAW_DB.RAW_SCHEMA.BILLING_DATA
+        GROUP BY STATUS
+    """).to_pandas()
+    st.bar_chart(status_df.set_index('STATUS')['TOTAL_AMOUNT'])
     
+    # Top Patients by Billing
+    st.subheader("💰 Top 10 Patients by Total Billing")
+    top_billing = session.sql("""
+        SELECT PATIENT_ID, TOTAL_BILLS, TOTAL_AMOUNT, PAID_AMOUNT, OVERDUE_AMOUNT
+        FROM ANALYTICS_DB.ANALYTICS_SCHEMA.BILLING_ANALYTICS
+        ORDER BY TOTAL_AMOUNT DESC
+        LIMIT 10
+    """).to_pandas()
+    st.dataframe(top_billing, use_container_width=True)
+
+# ======================
+# PAGE: MONITORING
+# ======================
+elif page == "📈 Monitoring":
+    st.header("System Monitoring")
+    
+    # Credit Usage
+    st.subheader("💳 Credit Usage (Last 30 Days)")
+    credit_df = session.sql("""
+        SELECT * FROM MONITORING_DB.MONITORING_SCHEMA.CREDIT_USAGE_VIEW
+        ORDER BY USAGE_DATE DESC
+        LIMIT 30
+    """).to_pandas()
+    
+    if len(credit_df) > 0:
+        st.bar_chart(credit_df.set_index('USAGE_DATE')['DAILY_CREDITS'])
+    else:
+        st.info("No credit usage data available")
+    
+    # Query Performance
+    st.subheader("⚡ Recent Query Performance")
+    query_df = session.sql("""
+        SELECT QUERY_ID, USER_NAME, WAREHOUSE_NAME, EXECUTION_STATUS, 
+               ROUND(TOTAL_ELAPSED_TIME/1000, 2) as ELAPSED_SECONDS
+        FROM MONITORING_DB.MONITORING_SCHEMA.QUERY_HISTORY_VIEW
+        ORDER BY START_TIME DESC
+        LIMIT 20
+    """).to_pandas()
+    st.dataframe(query_df, use_container_width=True)
+    
+    # Failed Logins
+    st.subheader("🔒 Failed Login Attempts (Last 7 Days)")
+    failed_df = session.sql("""
+        SELECT USER_NAME, COUNT(*) as FAILED_ATTEMPTS
+        FROM MONITORING_DB.MONITORING_SCHEMA.FAILED_LOGINS_VIEW
+        GROUP BY USER_NAME
+        ORDER BY FAILED_ATTEMPTS DESC
+    """).to_pandas()
+    
+    if len(failed_df) > 0:
+        st.dataframe(failed_df, use_container_width=True)
+    else:
+        st.success("✅ No failed login attempts")
+
+# ======================
+# PAGE: GOVERNANCE
+# ======================
+elif page == "🔐 Governance":
+    st.header("Data Governance & Compliance")
+    
+    # RBAC Summary
+    st.subheader("👥 Role Hierarchy")
+    st.markdown("""
+    ```
+    ACCOUNTADMIN
+        └── HC_ACCOUNT_ADMIN
+                ├── HC_SECURITY_ADMIN
+                ├── HC_DATA_SCIENTIST
+                └── HC_DATA_ENGINEER
+                        └── HC_ANALYST
+                                └── HC_VIEWER
+    ```
+    """)
+    
+    # Roles
+    st.subheader("🔑 Healthcare Roles")
+    roles_df = session.sql("SHOW ROLES LIKE 'HC_%'").to_pandas()
+    st.dataframe(roles_df[['name', 'assigned_to_users', 'granted_roles']], use_container_width=True)
+    
+    # Masking Policies
+    st.subheader("🎭 Data Masking Policies")
+    st.markdown("""
+    | Policy | Protected Data | Visible To |
+    |--------|---------------|------------|
+    | SSN_MASK | Social Security Numbers | ACCOUNTADMIN, HC_ACCOUNT_ADMIN, HC_DATA_ENGINEER |
+    | PHONE_MASK | Phone Numbers | ACCOUNTADMIN, HC_ACCOUNT_ADMIN, HC_DATA_ENGINEER |
+    | INSURANCE_MASK | Insurance Numbers | ACCOUNTADMIN, HC_ACCOUNT_ADMIN |
+    """)
+    
+    # Compliance Metrics
+    st.subheader("📋 Compliance Summary")
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Revenue", "$25.4M")
-    with col2:
-        st.metric("Paid", "$18.2M (72%)")
-    with col3:
-        st.metric("Overdue", "$2.1M (8%)")
-    
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Payment Status")
-        st.bar_chart({"Paid": 14400, "Pending": 4000, "Overdue": 1600})
-    
-    with col2:
-        st.subheader("Revenue by Service Type")
-        st.bar_chart({
-            "Surgery": 8500000,
-            "Room Charges": 6200000,
-            "Medication": 4800000,
-            "Lab Tests": 3500000,
-            "Consultation": 2400000
-        })
-
-# Risk Analysis
-elif page == "⚠️ Risk Analysis":
-    st.title("Patient Risk Analysis")
-    
-    # Risk Distribution
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Risk Score Distribution")
-        st.bar_chart({
-            "Score 0 (Low)": 4200,
-            "Score 1": 2800,
-            "Score 2": 1500,
-            "Score 3": 1000,
-            "Score 4+ (Critical)": 500
-        })
-    
-    with col2:
-        st.subheader("Risk by Category")
-        st.bar_chart({
-            "Age Risk (>65)": 3200,
-            "Low Oxygen (<92%)": 1800,
-            "High Heart Rate": 2100,
-            "High BP": 1500,
-            "Critical Events": 900
-        })
-    
-    st.markdown("---")
-    
-    st.subheader("🚨 Critical Patients (Risk Score >= 3)")
-    critical = {
-        "Patient ID": ["P04521", "P07234", "P01987", "P08432", "P03298"],
-        "Age": [78, 82, 71, 85, 69],
-        "Diagnosis": ["Cardiology", "Pulmonology", "Cardiology", "Neurology", "Pulmonology"],
-        "Risk Score": [4, 4, 3, 4, 3],
-        "Avg O2": [88, 86, 91, 89, 90],
-        "Avg HR": [125, 118, 112, 130, 108],
-        "Status": ["Critical", "Critical", "High", "Critical", "High"]
-    }
-    st.dataframe(critical, use_container_width=True, hide_index=True)
-
-# Performance Page
-elif page == "📈 Performance":
-    st.title("System Performance")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Warehouse Credit Usage")
-        st.bar_chart({
-            "HC_ETL_WH": 12.5,
-            "HC_TRANSFORM_WH": 18.3,
-            "HC_ANALYTICS_WH": 8.7,
-            "HC_AI_WH": 25.1
-        })
-    
-    with col2:
-        st.subheader("Query Performance (Avg Duration)")
-        st.bar_chart({
-            "< 1 sec": 8500,
-            "1-5 sec": 3200,
-            "5-30 sec": 1800,
-            "30-60 sec": 400,
-            "> 60 sec": 100
-        })
-    
-    st.markdown("---")
-    
-    st.subheader("📊 Data Pipeline Status")
-    pipeline = {
-        "Layer": ["Bronze (RAW_DB)", "Silver (TRANSFORM_DB)", "Gold (ANALYTICS_DB)", "Platinum (AI_READY_DB)"],
-        "Records": ["85,000", "60,000", "18,608", "10,000"],
-        "Last Updated": ["2 min ago", "5 min ago", "10 min ago", "15 min ago"],
-        "Status": ["✅ Active", "✅ Active", "✅ Active", "✅ Active"]
-    }
-    st.dataframe(pipeline, use_container_width=True, hide_index=True)
-    
-    st.subheader("🔔 Active Alerts")
-    st.info("HC_ALERT_HIGH_CREDITS: Daily credit usage at 65%")
-    st.warning("HC_ALERT_ICU_CRITICAL: 12 patients with risk score >= 3")
+    col1.metric("🏷️ Classification Tags", "3")
+    col2.metric("🎭 Masking Policies", "3")
+    col3.metric("🚪 Row Access Policies", "1")
 
 # Footer
-st.sidebar.markdown("---")
-st.sidebar.markdown("### Account Info")
-st.sidebar.text("Account: tyb42779")
-st.sidebar.text("User: DEVIKAPG")
-st.sidebar.text("Role: ACCOUNTADMIN")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("*Healthcare Enterprise Data Hub v1.0*")
-st.sidebar.markdown("*Built with Snowflake + Streamlit*")
+st.markdown("---")
+st.caption("Healthcare Enterprise Data Hub © 2026 | Account: tyb42779 | User: DEVIKAPG")

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - 'Healthcare-Snowflake-Enterprise/sql/**'
+      - 'sql/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +16,6 @@ on:
         type: choice
         options:
           - development
-          - staging
           - production
 
 env:
@@ -27,7 +26,6 @@ env:
   SNOWFLAKE_WAREHOUSE: COMPUTE_WH
 
 jobs:
-  # Job 1: Validate SQL Syntax
   validate:
     name: Validate SQL
     runs-on: ubuntu-latest
@@ -45,30 +43,13 @@ jobs:
 
       - name: Lint SQL Files
         run: |
-          sqlfluff lint Healthcare-Snowflake-Enterprise/sql/ \
-            --dialect snowflake \
-            --ignore parsing \
-            || true
+          sqlfluff lint sql/ --dialect snowflake --ignore parsing || true
 
-      - name: Validate SQL Syntax
-        run: |
-          echo "Validating SQL files..."
-          for file in Healthcare-Snowflake-Enterprise/sql/*.sql; do
-            echo "Checking: $file"
-            # Basic syntax validation
-            if grep -q "CREATE\|ALTER\|INSERT\|SELECT" "$file"; then
-              echo "✓ Valid SQL structure"
-            fi
-          done
-          echo "Validation complete!"
-
-  # Job 2: Deploy to Development
-  deploy-dev:
-    name: Deploy to Development
+  deploy:
+    name: Deploy to Snowflake
     needs: validate
-    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development'
     runs-on: ubuntu-latest
-    environment: development
+    environment: ${{ github.event.inputs.environment || 'development' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -81,57 +62,11 @@ jobs:
       - name: Install Snowflake Connector
         run: pip install snowflake-connector-python
 
-      - name: Deploy to Snowflake Dev
-        run: |
-          python << 'EOF'
-          import snowflake.connector
-          import os
-
-          conn = snowflake.connector.connect(
-              account=os.environ['SNOWFLAKE_ACCOUNT'],
-              user=os.environ['SNOWFLAKE_USER'],
-              password=os.environ['SNOWFLAKE_PASSWORD'],
-              role='ACCOUNTADMIN',
-              warehouse='COMPUTE_WH'
-          )
-
-          # Log deployment start
-          cursor = conn.cursor()
-          cursor.execute("""
-              INSERT INTO DEVOPS_DB.CI_CD.DEPLOYMENT_LOG 
-              (DEPLOYMENT_ID, SCRIPT_NAME, STATUS, ENVIRONMENT)
-              VALUES (
-                  'GH_' || CURRENT_TIMESTAMP()::STRING,
-                  'github-actions-dev',
-                  'STARTED',
-                  'DEVELOPMENT'
-              )
-          """)
-
-          print("Development deployment initiated")
-          conn.close()
-          EOF
-
-  # Job 3: Deploy to Production
-  deploy-prod:
-    name: Deploy to Production
-    needs: validate
-    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Snowflake Connector
-        run: pip install snowflake-connector-python
-
-      - name: Deploy Master Script
+      - name: Deploy SQL Scripts
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
           python << 'EOF'
           import snowflake.connector
@@ -148,53 +83,43 @@ jobs:
 
           cursor = conn.cursor()
 
-          # Read and execute master deployment script
-          script_path = Path('Healthcare-Snowflake-Enterprise/sql/master_deployment.sql')
-          if script_path.exists():
-              sql_content = script_path.read_text()
-              
-              # Split by semicolons and execute
-              statements = [s.strip() for s in sql_content.split(';') if s.strip()]
-              
-              success_count = 0
-              fail_count = 0
-              
-              for stmt in statements[:50]:  # Limit for safety
-                  if stmt and not stmt.startswith('--'):
-                      try:
-                          cursor.execute(stmt)
-                          success_count += 1
-                      except Exception as e:
-                          print(f"Warning: {str(e)[:100]}")
-                          fail_count += 1
-              
-              print(f"Deployment complete: {success_count} succeeded, {fail_count} warnings")
+          sql_files = [
+              'sql/01_account_administration.sql',
+              'sql/02_rbac_setup.sql',
+              'sql/03_warehouse_management.sql',
+              'sql/04_database_structure.sql',
+              'sql/05_resource_monitors.sql',
+              'sql/06_monitoring_views.sql',
+              'sql/07_alerts.sql',
+              'sql/08_data_governance.sql',
+              'sql/09_audit_layer.sql',
+              'sql/10_verification.sql',
+              'sql/11_medallion_architecture.sql',
+              'sql/12_healthcare_industry.sql',
+              'sql/13_ai_ready_layer.sql'
+          ]
 
-          # Log deployment completion
-          cursor.execute("""
-              INSERT INTO DEVOPS_DB.CI_CD.DEPLOYMENT_LOG 
-              (DEPLOYMENT_ID, SCRIPT_NAME, STATUS, ENVIRONMENT, GIT_COMMIT_HASH)
-              VALUES (
-                  'GH_PROD_' || CURRENT_TIMESTAMP()::STRING,
-                  'master_deployment.sql',
-                  'COMPLETED',
-                  'PRODUCTION',
-                  '${{ github.sha }}'
-              )
-          """)
+          for sql_file in sql_files:
+              script_path = Path(sql_file)
+              if script_path.exists():
+                  print(f"Executing: {sql_file}")
+                  sql_content = script_path.read_text()
+                  statements = [s.strip() for s in sql_content.split(';') if s.strip()]
+                  
+                  for stmt in statements:
+                      if stmt and not stmt.startswith('--'):
+                          try:
+                              cursor.execute(stmt)
+                          except Exception as e:
+                              print(f"Warning: {str(e)[:100]}")
 
           conn.close()
-          print("Production deployment complete!")
+          print("Deployment complete!")
           EOF
 
-      - name: Notify Success
-        run: echo "✅ Production deployment completed successfully"
-
-  # Job 4: Run Tests
   test:
-    name: Run Verification Tests
-    needs: [deploy-dev]
-    if: always()
+    name: Run Tests
+    needs: deploy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -208,7 +133,11 @@ jobs:
       - name: Install Snowflake Connector
         run: pip install snowflake-connector-python
 
-      - name: Run Test Cases
+      - name: Run Verification Tests
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
           python << 'EOF'
           import snowflake.connector
@@ -225,9 +154,10 @@ jobs:
           cursor = conn.cursor()
           
           tests = [
-              ("Databases", "SELECT COUNT(*) FROM (SHOW DATABASES LIKE '%_DB')", 7),
-              ("Roles", "SELECT COUNT(*) FROM (SHOW ROLES LIKE 'HC_%')", 6),
-              ("Warehouses", "SELECT COUNT(*) FROM (SHOW WAREHOUSES LIKE 'HC_%')", 4),
+              ("PATIENT_RAW", "SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.PATIENT_RAW", 10000),
+              ("ICU_EVENTS", "SELECT COUNT(*) FROM RAW_DB.RAW_SCHEMA.ICU_EVENTS", 50000),
+              ("CLEAN_PATIENT", "SELECT COUNT(*) FROM TRANSFORM_DB.TRANSFORM_SCHEMA.CLEAN_PATIENT", 10000),
+              ("PATIENT_ANALYTICS", "SELECT COUNT(*) FROM ANALYTICS_DB.ANALYTICS_SCHEMA.PATIENT_ANALYTICS", 10000),
           ]
           
           print("Running verification tests...")
@@ -235,11 +165,10 @@ jobs:
               try:
                   cursor.execute(query)
                   result = cursor.fetchone()[0]
-                  status = "✅ PASS" if result >= expected else "❌ FAIL"
-                  print(f"{name}: {result} (expected >= {expected}) {status}")
+                  status = "PASS" if result >= expected else "FAIL"
+                  print(f"{status}: {name} = {result} (expected >= {expected})")
               except Exception as e:
-                  print(f"{name}: ❌ ERROR - {str(e)[:50]}")
+                  print(f"ERROR: {name} - {str(e)[:50]}")
           
           conn.close()
-          print("Tests complete!")
           EOF
