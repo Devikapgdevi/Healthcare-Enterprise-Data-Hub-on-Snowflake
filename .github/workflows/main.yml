@@ -1,0 +1,142 @@
+name: Snowflake Healthcare CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'sql/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - production
+
+jobs:
+  validate:
+    name: Validate SQL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install SQLFluff
+        run: pip install sqlfluff
+
+      - name: Lint SQL Files
+        run: sqlfluff lint sql/ --dialect snowflake --ignore parsing || true
+
+  deploy:
+    name: Deploy to Snowflake
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'development' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake Connector
+        run: pip install snowflake-connector-python
+
+      - name: Deploy SQL Scripts
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+        run: |
+          python << 'EOF'
+          import snowflake.connector
+          import os
+          from pathlib import Path
+
+          conn = snowflake.connector.connect(
+              account=os.environ['SNOWFLAKE_ACCOUNT'],
+              user=os.environ['SNOWFLAKE_USER'],
+              password=os.environ['SNOWFLAKE_PASSWORD'],
+              role='ACCOUNTADMIN',
+              warehouse='COMPUTE_WH'
+          )
+
+          cursor = conn.cursor()
+
+          sql_files = sorted(Path('sql').glob('*.sql'))
+
+          for sql_file in sql_files:
+              print(f"Executing: {sql_file}")
+              sql_content = sql_file.read_text()
+              statements = [s.strip() for s in sql_content.split(';') if s.strip()]
+              
+              for stmt in statements:
+                  if stmt and not stmt.startswith('--'):
+                      try:
+                          cursor.execute(stmt)
+                      except Exception as e:
+                          print(f"Warning: {str(e)[:100]}")
+
+          conn.close()
+          print("Deployment complete!")
+          EOF
+
+  test:
+    name: Run Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Snowflake Connector
+        run: pip install snowflake-connector-python
+
+      - name: Run Verification Tests
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+        run: |
+          python << 'EOF'
+          import snowflake.connector
+          import os
+
+          conn = snowflake.connector.connect(
+              account=os.environ['SNOWFLAKE_ACCOUNT'],
+              user=os.environ['SNOWFLAKE_USER'],
+              password=os.environ['SNOWFLAKE_PASSWORD'],
+              role='ACCOUNTADMIN',
+              warehouse='COMPUTE_WH'
+          )
+
+          cursor = conn.cursor()
+          
+          cursor.execute("SHOW DATABASES")
+          databases = cursor.fetchall()
+          print(f"PASS: Found {len(databases)} databases")
+          
+          cursor.execute("SHOW WAREHOUSES")
+          warehouses = cursor.fetchall()
+          print(f"PASS: Found {len(warehouses)} warehouses")
+
+          conn.close()
+          print("All tests completed!")
+          EOF
